@@ -174,7 +174,7 @@ fn get_precedence(operator: &str) -> usize {
         "|" | "^" => 1,
         "&" => 2,
         "!" => 3,
-        _ => panic!(format!("unsupported operator '{}'", operator))
+        _ => panic!("unsupported operator '{}'", operator)
     }
 }
 
