@@ -3,13 +3,13 @@ use std::collections::BTreeSet;
 use std::env;
 use std::process::exit;
 
-use crate::expression::{EvaluationContext, Expression};
+use crate::expression::{EvaluationContext, Expr};
 use crate::parser::parse;
 use crate::tokens::{ParseError, tokenize};
 
-mod tokens;
 mod expression;
 mod parser;
+mod tokens;
 
 fn print_usage(app_name: &str) {
     println!("Evaluates logical expressions");
@@ -85,25 +85,22 @@ fn print_chars(count: usize, ch: char) -> () {
     }
 }
 
-
-fn parse_expr(str: &str) -> Result<Box<dyn Expression>, ParseError> {
+fn parse_expr(str: &'_ str) -> Result<Expr<'_>, ParseError> {
     match tokenize(str) {
-        Ok(tokens) => {
-            match parse(&tokens) {
-                Err(err) => Err(err),
-                Ok(expr) => Ok(expr)
-            }
-        }
-        Err(err) => Err(err)
+        Ok(tokens) => match parse(&tokens) {
+            Err(err) => Err(err),
+            Ok(expr) => Ok(expr),
+        },
+        Err(err) => Err(err),
     }
 }
 
-fn collect_variables(expr: &dyn Expression) -> BTreeSet<String> {
+fn collect_variables(expr: &Expr<'_>) -> BTreeSet<String> {
     let mut variables: BTreeSet<String> = BTreeSet::new();
     let names = RefCell::new(&mut variables);
     expr.traverse(&|e| {
         if let Some(var) = e.as_variable() {
-            names.borrow_mut().insert(var.name.clone());
+            names.borrow_mut().insert(var.to_string());
         }
     });
     variables
@@ -111,7 +108,11 @@ fn collect_variables(expr: &dyn Expression) -> BTreeSet<String> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let app_name = if let Some(index) = args[0].rfind("/") { &args[0][(index + 1)..] } else { &args[0] };
+    let app_name = if let Some(index) = args[0].rfind("/") {
+        &args[0][(index + 1)..]
+    } else {
+        &args[0]
+    };
     if args.len() < 2 {
         print_usage(app_name);
         exit(1);
@@ -125,7 +126,7 @@ fn main() {
             exit(1);
         }
     };
-    let mut ctx = EvaluationContext::new(collect_variables(expr.as_ref()));
+    let mut ctx = EvaluationContext::new(collect_variables(&expr));
 
     // parse presets
     for arg in &args[2..] {
@@ -148,4 +149,3 @@ fn main() {
         print_table_result(&ctx, expr.eval(&ctx));
     }
 }
-

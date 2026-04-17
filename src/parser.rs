@@ -1,8 +1,7 @@
-use crate::expression;
-use crate::expression::{BinaryExpression, BinaryOperator, UnaryExpression, UnaryOperator};
-use crate::tokens::{ParseError, Token, token_len, token_name, token_pos};
+use crate::expression::Expr;
+use crate::tokens::{ParseError, Token, TokenKind};
 
-pub fn parse(tokens: &[Token]) -> Result<Box<dyn expression::Expression>, ParseError> {
+pub fn parse<'a>(tokens: &[Token<'a>]) -> Result<Expr<'a>, ParseError> {
     match tokens.len() {
         0 => Err(ParseError {
             pos: 0,
@@ -14,33 +13,33 @@ pub fn parse(tokens: &[Token]) -> Result<Box<dyn expression::Expression>, ParseE
 
         _ => match find_top_level_operator(tokens) {
             Some(pos) => parse_operator_expression(tokens, pos),
-            _ => parse_paranthesis_expression(tokens),
-        }
+            _ => parse_parenthesis_expression(tokens),
+        },
     }
 }
 
-fn parse_paranthesis_expression(tokens: &[Token]) -> Result<Box<dyn expression::Expression>, ParseError> {
-    match tokens[0] {
-        Token::OpenParanthesis(_) => (),
-        _ => return Err(ParseError {
-            pos: token_pos(&tokens[1]),
-            len: token_len(&tokens[1]),
-            message: String::from("operator expected"),
-        })
+fn parse_parenthesis_expression<'a>(tokens: &[Token<'a>]) -> Result<Expr<'a>, ParseError> {
+    if !matches!(tokens[0].kind, TokenKind::OpenParenthesis) {
+        // We have at least two tokens...
+        return Err(ParseError {
+            pos: tokens[1].pos,
+            len: tokens[1].len(),
+            message: "operator expected".into(),
+        });
     }
 
     let mut plevel = 0;
 
     for i in 0..tokens.len() {
-        match &tokens[i] {
-            Token::OpenParanthesis(_) => plevel += 1,
-            Token::CloseParanthesis(_) => {
+        match tokens[i].kind {
+            TokenKind::OpenParenthesis => plevel += 1,
+            TokenKind::CloseParenthesis => {
                 plevel -= 1;
                 if plevel < 0 && i + 1 < tokens.len() {
                     return Err(ParseError {
-                        pos: token_pos(&tokens[i + 1]),
-                        len: token_len(&tokens[i + 1]),
-                        message: String::from("operator expected"),
+                        pos: tokens[i + 1].pos,
+                        len: tokens[i + 1].len(),
+                        message: "operator expected".into(),
                     });
                 }
             }
@@ -50,86 +49,80 @@ fn parse_paranthesis_expression(tokens: &[Token]) -> Result<Box<dyn expression::
 
     if plevel > 0 {
         return Err(ParseError {
-            pos: token_pos(&tokens[tokens.len() - 1]) + token_len(&tokens[tokens.len() - 1]),
+            pos: tokens[tokens.len() - 1].pos + tokens[tokens.len() - 1].len(),
             len: 0,
-            message: String::from("\")\" expected"),
+            message: "\")\" expected".into(),
         });
     }
 
     parse(&tokens[1..(tokens.len() - 1)])
 }
 
-fn parse_operator_expression(tokens: &[Token], op_pos: usize) -> Result<Box<dyn expression::Expression>, ParseError> {
+fn parse_operator_expression<'a>(
+    tokens: &[Token<'a>],
+    op_pos: usize,
+) -> Result<Expr<'a>, ParseError> {
     let token = &tokens[op_pos];
-    let left = if op_pos > 0 {
-        match parse(&tokens[0..op_pos]) {
-            Ok(expr) => Some(expr),
-            Err(err) => return Err(err)
-        }
-    } else {
-        None
-    };
+
     let right = if op_pos < tokens.len() - 1 {
-        match parse(&tokens[(op_pos + 1)..]) {
-            Ok(expr) => Some(expr),
-            Err(err) => return Err(err)
-        }
+        parse(&tokens[(op_pos + 1)..])?
     } else {
-        None
+        return Err(ParseError {
+            pos: token.pos + token.len(),
+            len: 0,
+            message: "missing right hand side operand".into(),
+        });
     };
 
-    if right.is_none() {
-        return Err(ParseError {
-            pos: token_pos(token) + token_len(token),
-            len: 0,
-            message: String::from("missing right hand side operand"),
-        });
-    }
-    let right = right.unwrap();
-
-    if left.is_some() {
-        let left = left.unwrap();
-        match token_name(token) {
+    let n = token.name();
+    if op_pos > 0 {
+        let left = parse(&tokens[0..op_pos])?;
+        match n {
+            "|" => Ok(Expr::Or(Box::new(left), Box::new(right))),
+            "&" => Ok(Expr::And(Box::new(left), Box::new(right))),
+            "^" => Ok(Expr::Xor(Box::new(left), Box::new(right))),
+            "=" => Ok(Expr::Eq(Box::new(left), Box::new(right))),
+            "=>" => Ok(Expr::Imp(Box::new(left), Box::new(right))),
             "!" => Err(ParseError {
-                pos: token_pos(&tokens[0]),
-                len: token_pos(&tokens[op_pos - 1]) + token_len(&tokens[op_pos - 1]),
-                message: String::from("unexpected left hand side operand"),
+                pos: tokens[0].pos,
+                len: tokens[op_pos - 1].pos + tokens[op_pos - 1].len(),
+                message: "unexpected left hand side operand".into(),
             }),
-            "|" => Ok(Box::new(BinaryExpression::new(BinaryOperator::OR, left, right))),
-            "&" => Ok(Box::new(BinaryExpression::new(BinaryOperator::AND, left, right))),
-            "^" => Ok(Box::new(BinaryExpression::new(BinaryOperator::XOR, left, right))),
-            "=" => Ok(Box::new(BinaryExpression::new(BinaryOperator::EQ, left, right))),
-            "=>" => Ok(Box::new(BinaryExpression::new(BinaryOperator::IMP, left, right))),
             _ => Err(ParseError {
-                pos: token_pos(token),
-                len: token_len(token),
-                message: String::from(format!("unknown operator '{}'", token_name(token))),
-            })
+                pos: token.pos,
+                len: token.len(),
+                message: format!("unexpected operator: \"{}\"", n),
+            }),
         }
     } else {
-        match token_name(token) {
-            "!" => Ok(Box::new(UnaryExpression::new(UnaryOperator::NEG, right))),
-            "|" | "&" | "^" | "=" | "=>" => Err(ParseError {
-                pos: token_pos(token),
-                len: 0,
-                message: String::from("missing left hand side operand"),
-            }),
-            _ => Err(ParseError {
-                pos: token_pos(token),
-                len: token_len(token),
-                message: String::from(format!("unknown operator '{}'", token_name(token))),
+        // Unary expression
+        if n == "!" {
+            Ok(Expr::Not(Box::new(right)))
+        } else if n == "|" || n == "&" || n == "^" || n == "=" || n == "=>" {
+            Err(ParseError {
+                pos: token.pos,
+                len: token.len(),
+                message: "missing left hand side operand".into(),
+            })
+        } else {
+            Err(ParseError {
+                pos: token.pos,
+                len: token.len(),
+                message: format!("unknown operator \"{n}\""),
             })
         }
     }
 }
 
-fn parse_single_token_expression(token: &Token) -> Result<Box<dyn expression::Expression>, ParseError> {
-    match token {
-        Token::Value(_, value) => Ok(Box::new(expression::Value::new(*value))),
-        Token::Variable(_, name) => Ok(Box::new(expression::Variable::new(name))),
-        Token::Operator(pos, name) => Err(ParseError { pos: *pos, len: name.len(), message: String::from("value or variable expected") }),
-        Token::OpenParanthesis(pos) => Err(ParseError { pos: *pos, len: 1, message: String::from("value or variable expected") }),
-        Token::CloseParanthesis(pos) => Err(ParseError { pos: *pos, len: 1, message: String::from("value or variable expected") })
+fn parse_single_token_expression<'a>(token: &Token<'a>) -> Result<Expr<'a>, ParseError> {
+    match token.kind {
+        TokenKind::Value(value) => Ok(Expr::Value(value)),
+        TokenKind::Variable(name) => Ok(Expr::Variable(name)),
+        _ => Err(ParseError {
+            pos: token.pos,
+            len: token.len(),
+            message: "value or variable expected".into(),
+        }),
     }
 }
 
@@ -139,14 +132,16 @@ fn find_top_level_operator(tokens: &[Token]) -> Option<usize> {
 
     for i in 0..tokens.len() {
         let current = &tokens[i];
-        match current {
-            Token::Operator(_, _) => if plevel == 0 {
-                if has_higher_precedence(result, current) {
-                    result = Some((i, current));
+        match current.kind {
+            TokenKind::Operator(_) => {
+                if plevel == 0 {
+                    if has_higher_precedence(result, current) {
+                        result = Some((i, current));
+                    }
                 }
-            },
-            Token::OpenParanthesis(_) => plevel += 1,
-            Token::CloseParanthesis(_) => plevel -= 1,
+            }
+            TokenKind::OpenParenthesis => plevel += 1,
+            TokenKind::CloseParenthesis => plevel -= 1,
             _ => {}
         }
     }
@@ -154,17 +149,15 @@ fn find_top_level_operator(tokens: &[Token]) -> Option<usize> {
     result.map(|(pos, _token)| pos)
 }
 
-fn has_higher_precedence(current: Option<(usize, &Token)>, new: &Token) -> bool {
-    match current {
-        Some((_, Token::Operator(_, cname))) => {
-            match new {
-                Token::Operator(_, nname) =>
-                    get_precedence(cname) > get_precedence(nname),
-                _ =>
-                    false
-            }
-        }
-        _ => true
+fn has_higher_precedence(current: Option<(usize, &Token)>, token: &Token) -> bool {
+    if let Some(current) = current
+        && let TokenKind::Operator(current_op) = &current.1.kind
+        && let TokenKind::Operator(new_op) = &token.kind
+        && get_precedence(current_op) <= get_precedence(new_op)
+    {
+        false
+    } else {
+        true
     }
 }
 
@@ -174,14 +167,16 @@ fn get_precedence(operator: &str) -> usize {
         "|" | "^" => 1,
         "&" => 2,
         "!" => 3,
-        _ => panic!("unsupported operator '{}'", operator)
+        _ => panic!("unsupported operator '{}'", operator),
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::parser::{find_top_level_operator, parse_operator_expression, parse_paranthesis_expression, parse_single_token_expression, parse};
+    use crate::parser::{
+        find_top_level_operator, parse, parse_operator_expression, parse_parenthesis_expression,
+        parse_single_token_expression,
+    };
     use crate::tokens::tokenize;
 
     #[test]
@@ -228,20 +223,16 @@ mod tests {
         let tokens = tokenize("0 1 a bc").unwrap_or_else(|_| vec![]);
 
         let result = parse_single_token_expression(tokens.get(0).unwrap());
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Value(0)");
+        assert_eq!(format!("{:?}", result), "Ok(Value(false))");
 
         let result = parse_single_token_expression(tokens.get(1).unwrap());
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Value(1)");
+        assert_eq!(format!("{:?}", result), "Ok(Value(true))");
 
         let result = parse_single_token_expression(tokens.get(2).unwrap());
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Variable(a)");
+        assert_eq!(format!("{:?}", result), "Ok(Variable(\"a\"))");
 
         let result = parse_single_token_expression(tokens.get(3).unwrap());
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Variable(bc)");
+        assert_eq!(format!("{:?}", result), "Ok(Variable(\"bc\"))");
     }
 
     #[test]
@@ -249,62 +240,82 @@ mod tests {
         let tokens = tokenize("& ! ( )").unwrap_or_else(|_| vec![]);
 
         let result = parse_single_token_expression(tokens.get(0).unwrap());
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "value or variable expected");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"value or variable expected\", pos: 0, len: 1 })"
+        );
 
         let result = parse_single_token_expression(tokens.get(1).unwrap());
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "value or variable expected");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"value or variable expected\", pos: 2, len: 1 })"
+        );
 
         let result = parse_single_token_expression(tokens.get(2).unwrap());
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "value or variable expected");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"value or variable expected\", pos: 4, len: 1 })"
+        );
 
         let result = parse_single_token_expression(tokens.get(3).unwrap());
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "value or variable expected");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"value or variable expected\", pos: 6, len: 1 })"
+        );
     }
 
     #[test]
     fn parse_operator_expression_return_err_if_rhs_not_found() {
         let tokens = tokenize("!").unwrap_or_else(|_| vec![]);
         let result = parse_operator_expression(&tokens, 0);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "missing right hand side operand");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"missing right hand side operand\", pos: 1, len: 0 })"
+        );
 
         let tokens = tokenize("A&").unwrap_or_else(|_| vec![]);
         let result = parse_operator_expression(&tokens, 1);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "missing right hand side operand");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"missing right hand side operand\", pos: 2, len: 0 })"
+        );
     }
 
     #[test]
     fn parse_operator_expression_return_err_if_rhs_invalid() {
         let tokens = tokenize("!|").unwrap_or_else(|_| vec![]);
         let result = parse_operator_expression(&tokens, 0);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "value or variable expected");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"value or variable expected\", pos: 1, len: 1 })"
+        );
 
         let tokens = tokenize("A&|").unwrap_or_else(|_| vec![]);
         let result = parse_operator_expression(&tokens, 1);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "value or variable expected");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"value or variable expected\", pos: 2, len: 1 })"
+        );
     }
 
     #[test]
     fn parse_operator_expression_return_err_if_lhs_not_found() {
         let tokens = tokenize("&a").unwrap_or_else(|_| vec![]);
         let result = parse_operator_expression(&tokens, 0);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "missing left hand side operand");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"missing left hand side operand\", pos: 0, len: 1 })"
+        );
     }
 
     #[test]
     fn parse_operator_expression_return_err_if_lhs_not_expected() {
         let tokens = tokenize("a!b").unwrap_or_else(|_| vec![]);
         let result = parse_operator_expression(&tokens, 1);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "unexpected left hand side operand");
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"unexpected left hand side operand\", pos: 0, len: 1 })"
+        );
     }
 
     #[test]
@@ -312,75 +323,96 @@ mod tests {
         let tokens = tokenize("!a a|b a&b a^b a=>b a=b").unwrap_or_else(|_| vec![]);
 
         let result = parse_operator_expression(&tokens[..2], 0);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Neg(Variable(a))");
+        assert_eq!(format!("{:?}", result), "Ok(Not(Variable(\"a\")))");
 
         let result = parse_operator_expression(&tokens[2..5], 1);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Or(Variable(a),Variable(b))");
+        assert_eq!(
+            format!("{:?}", result),
+            "Ok(Or(Variable(\"a\"), Variable(\"b\")))"
+        );
 
         let result = parse_operator_expression(&tokens[5..8], 1);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "And(Variable(a),Variable(b))");
+        assert_eq!(
+            format!("{:?}", result),
+            "Ok(And(Variable(\"a\"), Variable(\"b\")))"
+        );
 
         let result = parse_operator_expression(&tokens[8..11], 1);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Xor(Variable(a),Variable(b))");
+        assert_eq!(
+            format!("{:?}", result),
+            "Ok(Xor(Variable(\"a\"), Variable(\"b\")))"
+        );
 
         let result = parse_operator_expression(&tokens[11..14], 1);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Imp(Variable(a),Variable(b))");
+        assert_eq!(
+            format!("{:?}", result),
+            "Ok(Imp(Variable(\"a\"), Variable(\"b\")))"
+        );
 
         let result = parse_operator_expression(&tokens[14..], 1);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Eq(Variable(a),Variable(b))");
+        assert_eq!(
+            format!("{:?}", result),
+            "Ok(Eq(Variable(\"a\"), Variable(\"b\")))"
+        );
     }
 
     #[test]
     fn parse_paranthesis_expression_return_err_if_not_starting_with_paranthesis_open() {
         let tokens = tokenize("a&b").unwrap_or_else(|_| vec![]);
-        let result = parse_paranthesis_expression(&tokens);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "operator expected");
+        let result = parse_parenthesis_expression(&tokens);
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"operator expected\", pos: 1, len: 1 })"
+        );
     }
 
     #[test]
     fn parse_paranthesis_expression_return_err_if_missing_paranthesis_close() {
         let tokens = tokenize("(a").unwrap_or_else(|_| vec![]);
-        let result = parse_paranthesis_expression(&tokens);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "\")\" expected");
+        let result = parse_parenthesis_expression(&tokens);
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"\\\")\\\" expected\", pos: 2, len: 0 })"
+        );
     }
 
     #[test]
     fn parse_paranthesis_expression_return_err_if_unblanced_paranthesis() {
         let tokens = tokenize("(a))").unwrap_or_else(|_| vec![]);
-        let result = parse_paranthesis_expression(&tokens);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "operator expected");
+        let result = parse_parenthesis_expression(&tokens);
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"operator expected\", pos: 2, len: 1 })"
+        );
     }
 
     #[test]
     fn parse_paranthesis_expression_return_err_if_more_than_one_paranthesis() {
         let tokens = tokenize("(a)(b)").unwrap_or_else(|_| vec![]);
-        let result = parse_paranthesis_expression(&tokens);
-        assert_eq!(result.is_err(), true);
-        assert_eq!(result.err().unwrap().message, "operator expected");
+        let result = parse_parenthesis_expression(&tokens);
+        assert_eq!(
+            format!("{:?}", result),
+            "Err(ParseError { message: \"operator expected\", pos: 2, len: 1 })"
+        );
     }
 
     #[test]
     fn parse_paranthesis_expression_return_ok_for_complex_expressions_with_paranthesis() {
         let tokens = tokenize("((a|b)&c)").unwrap_or_else(|_| vec![]);
-        let result = parse_paranthesis_expression(&tokens);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "And(Or(Variable(a),Variable(b)),Variable(c))");
+        let result = parse_parenthesis_expression(&tokens);
+        assert_eq!(
+            format!("{:?}", result),
+            "Ok(And(Or(Variable(\"a\"), Variable(\"b\")), Variable(\"c\")))"
+        );
     }
 
     #[test]
     fn parse_parses_complex_expressions() {
         let tokens = tokenize("(a|b&c) = ((a|b)&c)").unwrap_or_else(|_| vec![]);
         let result = parse(&tokens);
-        assert_eq!(result.is_err(), false);
-        assert_eq!(result.unwrap().to_dump_string(), "Eq(Or(Variable(a),And(Variable(b),Variable(c))),And(Or(Variable(a),Variable(b)),Variable(c)))");
+        assert_eq!(
+            format!("{:?}", result),
+            "Ok(Eq(Or(Variable(\"a\"), And(Variable(\"b\"), Variable(\"c\"))), And(Or(Variable(\"a\"), Variable(\"b\")), Variable(\"c\"))))"
+        );
     }
 }

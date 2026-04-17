@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::{Display, Formatter};
 
 /*
  * EvaluationContext
@@ -30,7 +31,10 @@ impl EvaluationContext {
                 self.values.insert(String::from(name), preset_value);
                 Ok(preset_value)
             } else {
-                Err(format!("variable '{}' preset twice - ignoring second time", name))
+                Err(format!(
+                    "variable '{}' preset twice - ignoring second time",
+                    name
+                ))
             }
         } else {
             Err(format!("no variable named '{}'", name))
@@ -43,7 +47,8 @@ impl EvaluationContext {
 
     pub fn set_not_presets(&mut self, values: u128) {
         for (i, var) in self.not_preset.iter().enumerate() {
-            self.values.insert(var.to_string(), (values & (1 << i)) != 0);
+            self.values
+                .insert(var.to_string(), (values & (1 << i)) != 0);
         }
     }
 }
@@ -52,437 +57,265 @@ impl EvaluationContext {
  * Expression
  */
 
-pub trait Expression {
-    fn eval(&self, ctxt: &EvaluationContext) -> bool;
-
-    fn precedence(&self) -> usize;
-
-    fn traverse(&self, callback: &dyn Fn(&dyn Expression)) -> ();
-
-    fn as_variable(&self) -> Option<&Variable> {
-        None
-    }
-
-    fn to_string(&self) -> String;
-
-    fn to_dump_string(&self) -> String {
-        self.to_string()
-    }
+#[derive(Debug)]
+pub enum Expr<'a> {
+    Value(bool),
+    Variable(&'a str),
+    Not(Box<Expr<'a>>),
+    Or(Box<Expr<'a>>, Box<Expr<'a>>),
+    And(Box<Expr<'a>>, Box<Expr<'a>>),
+    Xor(Box<Expr<'a>>, Box<Expr<'a>>),
+    Imp(Box<Expr<'a>>, Box<Expr<'a>>),
+    Eq(Box<Expr<'a>>, Box<Expr<'a>>),
 }
 
-fn to_string(expr: &Box<dyn Expression>, parent_precedence: usize) -> String {
-    if expr.precedence() > parent_precedence {
-        expr.to_string()
-    } else {
-        format!("({})", expr.to_string())
-    }
-}
-
-
-/*
- * Value
- */
-
-pub struct Value {
-    value: bool
-}
-
-
-impl Value {
-    pub fn new(value: bool) -> Value {
-        Value { value }
-    }
-}
-
-impl Expression for Value {
-    fn eval(&self, _ctxt: &EvaluationContext) -> bool {
-        self.value
-    }
-
-    fn precedence(&self) -> usize { 4 }
-
-    fn traverse(&self, callback: &dyn Fn(&dyn Expression)) -> () {
-        callback(self);
-    }
-
-    fn to_string(&self) -> String {
-        if self.value { String::from("1") } else { String::from("0") }
-    }
-
-    fn to_dump_string(&self) -> String {
-        if self.value { String::from("Value(1)") } else { String::from("Value(0)") }
-    }
-}
-
-
-/*
- * Variable
- */
-
-pub struct Variable {
-    pub name: String
-}
-
-impl Variable {
-    pub fn new(name: &str) -> Variable {
-        Variable { name: name.to_string() }
-    }
-}
-
-impl Expression for Variable {
-    fn eval(&self, ctxt: &EvaluationContext) -> bool {
-        ctxt.get(&self.name)
-    }
-
-    fn precedence(&self) -> usize { 4 }
-
-    fn traverse(&self, callback: &dyn Fn(&dyn Expression)) -> () {
-        callback(self);
-    }
-
-    fn as_variable(&self) -> Option<&Variable> {
-        Some(&self)
-    }
-
-    fn to_string(&self) -> String {
-        String::from(&self.name)
-    }
-
-    fn to_dump_string(&self) -> String {
-        String::from(format!("Variable({})", &self.name))
-    }
-}
-
-
-/*
- * UnaryOperator/Expression
- */
-
-pub enum UnaryOperator {
-    NEG
-}
-
-pub struct UnaryExpression {
-    op: UnaryOperator,
-    arg: Box<dyn Expression>,
-}
-
-impl UnaryExpression {
-    pub fn new(op: UnaryOperator, arg: Box<dyn Expression>) -> UnaryExpression {
-        UnaryExpression { op, arg }
-    }
-}
-
-impl Expression for UnaryExpression {
-    fn eval(&self, ctxt: &EvaluationContext) -> bool {
-        match self.op {
-            UnaryOperator::NEG => !self.arg.eval(ctxt)
-        }
-    }
-
-    fn traverse(&self, callback: &dyn Fn(&dyn Expression)) -> () {
-        callback(self);
-        self.arg.traverse(callback);
-    }
-
-    fn precedence(&self) -> usize {
-        match self.op {
-            UnaryOperator::NEG => 3
-        }
-    }
-
-    fn to_string(&self) -> String {
-        match self.op {
-            UnaryOperator::NEG => format!("!{}", to_string(&self.arg, self.precedence()))
-        }
-    }
-
-    fn to_dump_string(&self) -> String {
-        match self.op {
-            UnaryOperator::NEG => format!("Neg({})", &self.arg.to_dump_string())
-        }
-    }
-}
-
-
-/*
- * BinaryOperator/Expression
- */
-
-pub enum BinaryOperator {
-    OR,
-    AND,
-    XOR,
-    IMP,
-    EQ,
-}
-
-pub struct BinaryExpression {
-    op: BinaryOperator,
-    left: Box<dyn Expression>,
-    right: Box<dyn Expression>,
-}
-
-impl BinaryExpression {
-    pub fn new(op: BinaryOperator, left: Box<dyn Expression>, right: Box<dyn Expression>) -> BinaryExpression {
-        BinaryExpression { op, left, right }
-    }
-}
-
-impl Expression for BinaryExpression {
-    fn eval(&self, ctxt: &EvaluationContext) -> bool {
-        match self.op {
-            BinaryOperator::OR => self.left.eval(ctxt) || self.right.eval(ctxt),
-            BinaryOperator::XOR => self.left.eval(ctxt) != self.right.eval(ctxt),
-            BinaryOperator::AND => self.left.eval(ctxt) && self.right.eval(ctxt),
-            BinaryOperator::EQ => self.left.eval(ctxt) == self.right.eval(ctxt),
-            BinaryOperator::IMP => !self.left.eval(ctxt) || self.right.eval(ctxt)
+impl<'a> Expr<'a> {
+    pub(crate) fn eval(&self, ctxt: &EvaluationContext) -> bool {
+        match self {
+            Expr::Value(value) => *value,
+            Expr::Variable(name) => ctxt.get(name),
+            Expr::Not(expr) => !expr.eval(ctxt),
+            Expr::Or(left, right) => left.eval(ctxt) || right.eval(ctxt),
+            Expr::And(left, right) => left.eval(ctxt) && right.eval(ctxt),
+            Expr::Xor(left, right) => left.eval(ctxt) ^ right.eval(ctxt),
+            Expr::Imp(left, right) => !left.eval(ctxt) || right.eval(ctxt),
+            Expr::Eq(left, right) => left.eval(ctxt) == right.eval(ctxt),
         }
     }
 
     fn precedence(&self) -> usize {
-        match self.op {
-            BinaryOperator::OR => 1,
-            BinaryOperator::XOR => 1,
-            BinaryOperator::AND => 2,
-            BinaryOperator::EQ => 0,
-            BinaryOperator::IMP => 0
+        match self {
+            Expr::Value(_) => 4,
+            Expr::Variable(_) => 4,
+            Expr::Not(_) => 3,
+            Expr::Or(_, _) => 1,
+            Expr::And(_, _) => 2,
+            Expr::Xor(_, _) => 1,
+            Expr::Imp(_, _) => 0,
+            Expr::Eq(_, _) => 0,
         }
     }
 
-    fn traverse(&self, callback: &dyn Fn(&dyn Expression)) -> () {
+    pub(crate) fn traverse(&self, callback: &dyn Fn(&Expr)) -> () {
         callback(self);
-        self.left.traverse(callback);
-        self.right.traverse(callback);
-    }
-
-    fn to_string(&self) -> String {
-        let left = to_string(&self.left, self.precedence());
-        let right = to_string(&self.right, self.precedence());
-        match self.op {
-            BinaryOperator::OR => format!("{} | {}", left, right),
-            BinaryOperator::XOR => format!("{} ^ {}", left, right),
-            BinaryOperator::AND => format!("{} & {}", left, right),
-            BinaryOperator::EQ => format!("{} = {}", left, right),
-            BinaryOperator::IMP => format!("{} => {}", left, right)
+        match self {
+            Expr::Not(a) => a.traverse(callback),
+            Expr::Or(a, b) => {
+                a.traverse(callback);
+                b.traverse(callback);
+            }
+            Expr::And(a, b) => {
+                a.traverse(callback);
+                b.traverse(callback);
+            }
+            Expr::Xor(a, b) => {
+                a.traverse(callback);
+                b.traverse(callback);
+            }
+            Expr::Imp(a, b) => {
+                a.traverse(callback);
+                b.traverse(callback);
+            }
+            Expr::Eq(a, b) => {
+                a.traverse(callback);
+                b.traverse(callback);
+            }
+            _ => {}
         }
     }
 
-    fn to_dump_string(&self) -> String {
-        match self.op {
-            BinaryOperator::OR => format!("Or({},{})", self.left.to_dump_string(), self.right.to_dump_string()),
-            BinaryOperator::XOR => format!("Xor({},{})", self.left.to_dump_string(), self.right.to_dump_string()),
-            BinaryOperator::AND => format!("And({},{})", self.left.to_dump_string(), self.right.to_dump_string()),
-            BinaryOperator::EQ => format!("Eq({},{})", self.left.to_dump_string(), self.right.to_dump_string()),
-            BinaryOperator::IMP => format!("Imp({},{})", self.left.to_dump_string(), self.right.to_dump_string())
+    pub(crate) fn as_variable(&self) -> Option<&str> {
+        match self {
+            Expr::Variable(name) => Some(*name),
+            _ => None,
+        }
+    }
+
+    fn to_string_internal(&self, parent_precedence: usize) -> String {
+        if self.precedence() > parent_precedence {
+            self.to_string()
+        } else {
+            format!("({})", self.to_string())
         }
     }
 }
 
-
-/*
- * Tests
- */
+impl<'a> Display for Expr<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Value(value) => {
+                if *value {
+                    write!(f, "1")
+                } else {
+                    write!(f, "0")
+                }
+            }
+            Expr::Variable(name) => write!(f, "{}", name),
+            Expr::Not(expr) => write!(f, "!{}", expr.to_string_internal(self.precedence())),
+            Expr::Or(left, right) => write!(
+                f,
+                "{} | {}",
+                left.to_string_internal(self.precedence()),
+                right.to_string_internal(self.precedence())
+            ),
+            Expr::And(left, right) => write!(
+                f,
+                "{} & {}",
+                left.to_string_internal(self.precedence()),
+                right.to_string_internal(self.precedence())
+            ),
+            Expr::Xor(left, right) => write!(
+                f,
+                "{} ^ {}",
+                left.to_string_internal(self.precedence()),
+                right.to_string_internal(self.precedence())
+            ),
+            Expr::Imp(left, right) => write!(
+                f,
+                "{} => {}",
+                left.to_string_internal(self.precedence()),
+                right.to_string_internal(self.precedence())
+            ),
+            Expr::Eq(left, right) => write!(
+                f,
+                "{} = {}",
+                left.to_string_internal(self.precedence()),
+                right.to_string_internal(self.precedence())
+            ),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
-    impl EvaluationContext {
-        pub fn set(&mut self, name: &str, value: bool) {
-            self.values.insert(name.to_string(), value);
+    fn ctx_with(values: &[(&str, bool)]) -> EvaluationContext {
+        let mut variables = BTreeSet::new();
+        for (name, _) in values {
+            variables.insert((*name).to_string());
         }
-    }
-    
-    #[test]
-    fn value_tests() {
-        let vars = BTreeSet::new();
-        let ctxt = EvaluationContext::new(vars);
 
-        let expr = Value::new(true);
-        assert_eq!(expr.eval(&ctxt), true);
-        assert_eq!(expr.to_string(), "1");
-
-        let expr = Value::new(false);
-        assert_eq!(expr.eval(&ctxt), false);
-        assert_eq!(expr.to_string(), "0");
+        let mut ctx = EvaluationContext::new(variables);
+        for (name, value) in values {
+            ctx.preset(name, *value).unwrap();
+        }
+        ctx
     }
 
     #[test]
-    fn variable_tests() {
-        let mut vars = BTreeSet::new();
-        vars.insert(String::from("a"));
-        let mut ctxt = EvaluationContext::new(vars);
-        let expr = Variable::new("a");
-
-        ctxt.set("a", true);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", false);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        assert_eq!(expr.to_string(), "a");
+    fn value_and_variable_display() {
+        assert_eq!(Expr::Value(true).to_string(), "1");
+        assert_eq!(Expr::Value(false).to_string(), "0");
+        assert_eq!(Expr::Variable("a").to_string(), "a");
     }
 
     #[test]
-    fn neg_tests() {
-        let mut vars = BTreeSet::new();
-        vars.insert(String::from("a"));
-        let mut ctxt = EvaluationContext::new(vars);
-        let a = Variable::new("a");
-        let expr = UnaryExpression::new(UnaryOperator::NEG, Box::new(a));
-
-        ctxt.set("a", true);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        ctxt.set("a", false);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        assert_eq!(expr.to_string(), "!a");
+    fn as_variable_returns_name_only_for_variable() {
+        assert_eq!(Expr::Variable("foo").as_variable(), Some("foo"));
+        assert_eq!(Expr::Value(true).as_variable(), None);
+        assert_eq!(
+            Expr::Not(Box::new(Expr::Variable("foo"))).as_variable(),
+            None
+        );
     }
 
     #[test]
-    fn or_tests() {
-        let mut vars = BTreeSet::new();
-        vars.insert(String::from("a"));
-        vars.insert(String::from("b"));
-        let mut ctxt = EvaluationContext::new(vars);
-        let a = Variable::new("a");
-        let b = Variable::new("b");
-        let expr = BinaryExpression::new(BinaryOperator::OR, Box::new(a), Box::new(b));
-
-        ctxt.set("a", true);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", true);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", false);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", false);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        assert_eq!(expr.to_string(), "a | b");
+    fn evals_basic_boolean_values() {
+        let ctx = ctx_with(&[]);
+        assert!(Expr::Value(true).eval(&ctx));
+        assert!(!Expr::Value(false).eval(&ctx));
     }
 
     #[test]
-    fn xor_tests() {
-        let mut vars = BTreeSet::new();
-        vars.insert(String::from("a"));
-        vars.insert(String::from("b"));
-        let mut ctxt = EvaluationContext::new(vars);
-        let a = Variable::new("a");
-        let b = Variable::new("b");
-        let expr = BinaryExpression::new(BinaryOperator::XOR, Box::new(a), Box::new(b));
-
-        ctxt.set("a", true);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        ctxt.set("a", true);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", false);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", false);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        assert_eq!(expr.to_string(), "a ^ b");
+    fn evals_variables() {
+        let ctx = ctx_with(&[("a", true), ("b", false)]);
+        assert!(Expr::Variable("a").eval(&ctx));
+        assert!(!Expr::Variable("b").eval(&ctx));
     }
 
     #[test]
-    fn and_tests() {
-        let mut vars = BTreeSet::new();
-        vars.insert(String::from("a"));
-        vars.insert(String::from("b"));
-        let mut ctxt = EvaluationContext::new(vars);
-        let a = Variable::new("a");
-        let b = Variable::new("b");
-        let expr = BinaryExpression::new(BinaryOperator::AND, Box::new(a), Box::new(b));
+    fn evals_unary_and_binary_operators() {
+        let ctx = ctx_with(&[("a", true), ("b", false)]);
 
-        ctxt.set("a", true);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", true);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        ctxt.set("a", false);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        ctxt.set("a", false);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        assert_eq!(expr.to_string(), "a & b");
+        assert!(!Expr::Not(Box::new(Expr::Variable("a"))).eval(&ctx));
+        assert!(Expr::Or(Box::new(Expr::Variable("a")), Box::new(Expr::Variable("b"))).eval(&ctx));
+        assert!(
+            !Expr::And(Box::new(Expr::Variable("a")), Box::new(Expr::Variable("b"))).eval(&ctx)
+        );
+        assert!(Expr::Xor(Box::new(Expr::Variable("a")), Box::new(Expr::Variable("b"))).eval(&ctx));
+        assert!(
+            !Expr::Imp(Box::new(Expr::Variable("a")), Box::new(Expr::Variable("b"))).eval(&ctx)
+        );
+        assert!(Expr::Eq(Box::new(Expr::Variable("a")), Box::new(Expr::Value(true))).eval(&ctx));
     }
 
     #[test]
-    fn imp_tests() {
-        let mut vars = BTreeSet::new();
-        vars.insert(String::from("a"));
-        vars.insert(String::from("b"));
-        let mut ctxt = EvaluationContext::new(vars);
-        let a = Variable::new("a");
-        let b = Variable::new("b");
-        let expr = BinaryExpression::new(BinaryOperator::IMP, Box::new(a), Box::new(b));
+    fn traverse_visits_nodes_preorder() {
+        let expr = Expr::Or(
+            Box::new(Expr::Not(Box::new(Expr::Variable("a")))),
+            Box::new(Expr::And(
+                Box::new(Expr::Variable("b")),
+                Box::new(Expr::Value(true)),
+            )),
+        );
 
-        ctxt.set("a", true);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), true);
+        let mut visited = Vec::new();
+        let visited_ref = RefCell::new(&mut visited);
+        expr.traverse(&|e| visited_ref.borrow_mut().push(e.to_string()));
 
-        ctxt.set("a", true);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        ctxt.set("a", false);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        ctxt.set("a", false);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        assert_eq!(expr.to_string(), "a => b");
+        assert_eq!(visited, vec!["!a | b & 1", "!a", "a", "b & 1", "b", "1"]);
     }
 
     #[test]
-    fn eq_tests() {
-        let mut vars = BTreeSet::new();
-        vars.insert(String::from("a"));
-        vars.insert(String::from("b"));
-        let mut ctxt = EvaluationContext::new(vars);
-        let a = Variable::new("a");
-        let b = Variable::new("b");
-        let expr = BinaryExpression::new(BinaryOperator::EQ, Box::new(a), Box::new(b));
+    fn display_adds_parentheses_according_to_precedence() {
+        assert_eq!(
+            Expr::Or(
+                Box::new(Expr::Variable("a")),
+                Box::new(Expr::And(
+                    Box::new(Expr::Variable("b")),
+                    Box::new(Expr::Variable("c"))
+                ))
+            )
+            .to_string(),
+            "a | b & c"
+        );
 
-        ctxt.set("a", true);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), true);
+        assert_eq!(
+            Expr::And(
+                Box::new(Expr::Or(
+                    Box::new(Expr::Variable("a")),
+                    Box::new(Expr::Variable("b"))
+                )),
+                Box::new(Expr::Variable("c"))
+            )
+            .to_string(),
+            "(a | b) & c"
+        );
 
-        ctxt.set("a", true);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), false);
+        assert_eq!(
+            Expr::Not(Box::new(Expr::Or(
+                Box::new(Expr::Variable("a")),
+                Box::new(Expr::Variable("b"))
+            )))
+            .to_string(),
+            "!(a | b)"
+        );
 
-        ctxt.set("a", false);
-        ctxt.set("b", true);
-        assert_eq!(expr.eval(&ctxt), false);
-
-        ctxt.set("a", false);
-        ctxt.set("b", false);
-        assert_eq!(expr.eval(&ctxt), true);
-
-        assert_eq!(expr.to_string(), "a = b");
+        assert_eq!(
+            Expr::Imp(
+                Box::new(Expr::And(
+                    Box::new(Expr::Variable("a")),
+                    Box::new(Expr::Variable("b"))
+                )),
+                Box::new(Expr::Eq(
+                    Box::new(Expr::Variable("c")),
+                    Box::new(Expr::Variable("d"))
+                ))
+            )
+            .to_string(),
+            "a & b => (c = d)"
+        );
     }
 }
